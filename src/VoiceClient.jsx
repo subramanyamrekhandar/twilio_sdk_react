@@ -52,16 +52,28 @@ export default function VoiceClient() {
 
       const token = await getToken();
 
+      // const twilioDevice = new Device(token, {
+      //   codecPreferences: ["opus", "pcmu"],
+      //   fakeLocalDTMF: true,
+      //   enableRingingState: true,
+      // });
+
+      // twilioDevice.on("ready", () => {
+      //   setStatusText(`Device ready`, "success");
+      //   setDevice(twilioDevice);
+      // });
       const twilioDevice = new Device(token, {
         codecPreferences: ["opus", "pcmu"],
         fakeLocalDTMF: true,
         enableRingingState: true,
       });
-
+      
+      // store device immediately
+      setDevice(twilioDevice);
       twilioDevice.on("ready", () => {
         setStatusText(`Device ready`, "success");
-        setDevice(twilioDevice);
       });
+
 
       twilioDevice.on("error", (err) => {
         setStatusText(`Device error: ${err.message}`, "error");
