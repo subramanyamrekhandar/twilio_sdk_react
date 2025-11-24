@@ -2,7 +2,7 @@ import { useState, useRef } from "react";
 import { Device } from "@twilio/voice-sdk";
 
 export default function VoiceClient() {
-  const [backendUrl, setBackendUrl] = useState("http://localhost:8000");
+  const [backendUrl, setBackendUrl] = useState("https://namunahai.surextechnologies.com");
   const [identity, setIdentity] = useState("");
   const [dialTo, setDialTo] = useState("");
   const [status, setStatus] = useState("Device not initialized");
