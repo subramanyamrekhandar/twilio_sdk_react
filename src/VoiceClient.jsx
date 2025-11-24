@@ -3,7 +3,7 @@ import { Device } from "@twilio/voice-sdk";
 
 export default function VoiceClient() {
   const [backendUrl, setBackendUrl] = useState("https://namunahai.surextechnologies.com");
-  const [identity, setIdentity] = useState("");
+  const [identity, setIdentity] = useState("agent_web_01");
   const [dialTo, setDialTo] = useState("");
   const [status, setStatus] = useState("Device not initialized");
   const [statusType, setStatusType] = useState("info");
@@ -14,7 +14,8 @@ export default function VoiceClient() {
 
   function log(message, type = "info") {
     const timestamp = new Date().toISOString();
-    const prefix = type === "error" ? "❌" : type === "success" ? "✅" : "ℹ️";
+    const prefix =
+      type === "error" ? "❌" : type === "success" ? "✅" : "ℹ️";
     logRef.current.value = `${timestamp} ${prefix} ${message}\n${logRef.current.value}`;
   }
 
@@ -29,7 +30,7 @@ export default function VoiceClient() {
 
     log(`Requesting token from ${endpoint}`);
 
-    const body = identity ? JSON.stringify({ identity }) : "{}";
+    const body = JSON.stringify({ identity });
 
     const res = await fetch(endpoint, {
       method: "POST",
@@ -50,30 +51,25 @@ export default function VoiceClient() {
     try {
       setStatusText("Requesting token...", "info");
 
+      // Request microphone permissions explicitly
+      await navigator.mediaDevices.getUserMedia({ audio: true });
+
       const token = await getToken();
 
-      // const twilioDevice = new Device(token, {
-      //   codecPreferences: ["opus", "pcmu"],
-      //   fakeLocalDTMF: true,
-      //   enableRingingState: true,
-      // });
-
-      // twilioDevice.on("ready", () => {
-      //   setStatusText(`Device ready`, "success");
-      //   setDevice(twilioDevice);
-      // });
       const twilioDevice = new Device(token, {
         codecPreferences: ["opus", "pcmu"],
         fakeLocalDTMF: true,
         enableRingingState: true,
       });
-      
-      // store device immediately
-      setDevice(twilioDevice);
-      twilioDevice.on("ready", () => {
-        setStatusText(`Device ready`, "success");
+
+      twilioDevice.on("registered", () => {
+        setStatusText("Device registered & ready", "success");
+        setDevice(twilioDevice);
       });
 
+      twilioDevice.on("ready", () => {
+        setStatusText("Device ready", "success");
+      });
 
       twilioDevice.on("error", (err) => {
         setStatusText(`Device error: ${err.message}`, "error");
@@ -96,6 +92,7 @@ export default function VoiceClient() {
       });
 
       setStatusText("Device initializing...", "info");
+      await twilioDevice.register();
     } catch (err) {
       setStatusText(`Init failed: ${err.message}`, "error");
     }
@@ -103,10 +100,10 @@ export default function VoiceClient() {
 
   const placeCall = () => {
     if (!device) return log("Device not initialized", "error");
-    if (!dialTo) return log("Enter number/agent ID", "error");
+    if (!dialTo) return log("Enter number / agent ID", "error");
 
     setStatusText(`Calling ${dialTo}...`);
-    const conn = device.connect({ params: { To: dialTo } });
+    const conn = device.connect({ params: { To: dialTo, From: identity } });
     setActiveConnection(conn);
   };
 
@@ -118,27 +115,17 @@ export default function VoiceClient() {
 
   return (
     <div className="max-w-xl mx-auto bg-white p-8 mt-10 rounded-xl shadow-lg space-y-6">
-      <h1 className="text-2xl font-bold">🎤 Voice Agent WebRTC (React + Tailwind + Twilio)</h1>
+      <h1 className="text-2xl font-bold">🎤 Namunah AI Voice Client</h1>
 
       <div className="bg-yellow-100 border-l-4 border-yellow-500 p-4 text-sm rounded">
         <p className="font-semibold">Steps:</p>
-        <p>1. Enter backend URL</p>
-        <p>2. Initialize device</p>
-        <p>3. Enter number/agent ID</p>
-        <p>4. Place call</p>
+        <p>1. Initialize device</p>
+        <p>2. Enter phone / agent ID</p>
+        <p>3. Call & Speak</p>
       </div>
 
       <div>
-        <label className="font-semibold">Backend URL</label>
-        <input
-          className="w-full p-3 border border-gray-300 rounded mt-1"
-          value={backendUrl}
-          onChange={(e) => setBackendUrl(e.target.value)}
-        />
-      </div>
-
-      <div>
-        <label className="font-semibold">Identity (optional)</label>
+        <label className="font-semibold">Identity</label>
         <input
           className="w-full p-3 border border-gray-300 rounded mt-1"
           value={identity}
@@ -147,7 +134,7 @@ export default function VoiceClient() {
       </div>
 
       <div>
-        <label className="font-semibold">Dial To (Phone / Agent ID)</label>
+        <label className="font-semibold">Dial To</label>
         <input
           className="w-full p-3 border border-gray-300 rounded mt-1"
           value={dialTo}
