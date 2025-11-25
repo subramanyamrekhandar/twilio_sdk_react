@@ -27,19 +27,16 @@ export default function VoiceClient() {
 
   async function getToken() {
     const endpoint = `${backendUrl.replace(/\/$/, "")}/api/v1/telephony/access-token`;
-    log(`Requesting token from ${endpoint}`);
 
-    const body = JSON.stringify({ identity });
+    log(`Requesting token from ${endpoint}`);
 
     const res = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body,
+      body: JSON.stringify({ identity }),
     });
 
-    if (!res.ok) {
-      throw new Error(`Token request failed: ${await res.text()}`);
-    }
+    if (!res.ok) throw new Error(`Token request failed: ${await res.text()}`);
 
     const data = await res.json();
     log(`Token received. Identity: ${data.identity}`, "success");
@@ -49,11 +46,9 @@ export default function VoiceClient() {
   const initDevice = async () => {
     try {
       setStatusText("Requesting token...", "info");
-
       await navigator.mediaDevices.getUserMedia({ audio: true });
 
       const token = await getToken();
-
       const twilioDevice = new Device(token, {
         codecPreferences: ["opus", "pcmu"],
         fakeLocalDTMF: true,
@@ -61,22 +56,22 @@ export default function VoiceClient() {
         enableIceRestart: true,
       });
 
-      // Handle speaker devices when available
+      // 🔊 Speaker setup fix: must set deviceId string only
       twilioDevice.audio.on("ready", () => {
         const defaultSpeaker = twilioDevice.audio.availableOutputDevices.get("default");
         if (defaultSpeaker) {
-          twilioDevice.audio.speakerDevices.set(defaultSpeaker);
-          log("🔊 Speaker device bound successfully");
+          twilioDevice.audio.speakerDevices.set(defaultSpeaker.deviceId);
+          log("🔊 Speaker successfully bound");
         } else {
-          log("⚠️ No default speaker found");
+          log("⚠️ No available default speaker device");
         }
       });
 
       twilioDevice.audio.on("deviceChange", () => {
-        log("Audio devices changed: rebinding speakers");
+        log("Audio devices changed");
         const defaultSpeaker = twilioDevice.audio.availableOutputDevices.get("default");
         if (defaultSpeaker) {
-          twilioDevice.audio.speakerDevices.set(defaultSpeaker);
+          twilioDevice.audio.speakerDevices.set(defaultSpeaker.deviceId);
         }
       });
 
@@ -85,16 +80,16 @@ export default function VoiceClient() {
         setDevice(twilioDevice);
       });
 
-      twilioDevice.on("ready", () => {
-        setStatusText("Device ready", "success");
-      });
-
       twilioDevice.on("error", (err) => {
         setStatusText(`Device error: ${err.message}`, "error");
       });
 
+      twilioDevice.on("ready", () => {
+        setStatusText("Device ready", "success");
+      });
+
       twilioDevice.on("incoming", (conn) => {
-        log("📞 Incoming call - accepting automatically");
+        log("📞 Incoming call - accepting...");
         conn.accept();
         setActiveConnection(conn);
       });
@@ -105,13 +100,12 @@ export default function VoiceClient() {
 
         const defaultSpeaker = twilioDevice.audio.availableOutputDevices.get("default");
         if (defaultSpeaker) {
-          twilioDevice.audio.speakerDevices.set(defaultSpeaker);
+          twilioDevice.audio.speakerDevices.set(defaultSpeaker.deviceId);
         }
 
         conn.mute(false);
-
         conn.on("volume", (inVol, outVol) => {
-          console.log("Input Volume:", inVol, "Output Volume:", outVol);
+          console.log("Input:", inVol, "Output:", outVol);
         });
       });
 
@@ -153,23 +147,16 @@ export default function VoiceClient() {
         <p>3. Call & Speak</p>
       </div>
 
-      <div>
-        <label className="font-semibold">Identity</label>
-        <input
-          className="w-full p-3 border border-gray-300 rounded mt-1"
-          value={identity}
-          onChange={(e) => setIdentity(e.target.value)}
-        />
-      </div>
-
-      <div>
-        <label className="font-semibold">Dial To</label>
-        <input
-          className="w-full p-3 border border-gray-300 rounded mt-1"
-          value={dialTo}
-          onChange={(e) => setDialTo(e.target.value)}
-        />
-      </div>
+      <input
+        className="w-full p-3 border mt-1 rounded"
+        value={identity}
+        onChange={(e) => setIdentity(e.target.value)}
+      />
+      <input
+        className="w-full p-3 border mt-1 rounded"
+        value={dialTo}
+        onChange={(e) => setDialTo(e.target.value)}
+      />
 
       <div
         className={`p-3 rounded font-semibold ${
@@ -184,15 +171,12 @@ export default function VoiceClient() {
       </div>
 
       <div className="flex gap-3">
-        <button
-          className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded"
-          onClick={initDevice}
-        >
+        <button className="bg-green-600 text-white px-4 py-2 rounded" onClick={initDevice}>
           Initialize
         </button>
 
         <button
-          className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded disabled:opacity-40"
+          className="bg-blue-600 text-white px-4 py-2 rounded disabled:opacity-40"
           onClick={placeCall}
           disabled={!device || activeConnection}
         >
@@ -200,7 +184,7 @@ export default function VoiceClient() {
         </button>
 
         <button
-          className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded disabled:opacity-40"
+          className="bg-red-600 text-white px-4 py-2 rounded disabled:opacity-40"
           onClick={hangupCall}
           disabled={!activeConnection}
         >
@@ -208,14 +192,11 @@ export default function VoiceClient() {
         </button>
       </div>
 
-      <div>
-        <h3 className="text-lg font-semibold">📋 Logs</h3>
-        <textarea
-          ref={logRef}
-          readOnly
-          className="w-full h-40 border border-gray-300 p-2 rounded font-mono text-sm"
-        />
-      </div>
+      <textarea
+        ref={logRef}
+        readOnly
+        className="w-full h-40 border p-2 rounded font-mono text-sm"
+      />
     </div>
   );
 }
