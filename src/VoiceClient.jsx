@@ -27,7 +27,6 @@ export default function VoiceClient() {
 
   async function getToken() {
     const endpoint = `${backendUrl.replace(/\/$/, "")}/api/v1/telephony/access-token`;
-
     log(`Requesting token from ${endpoint}`);
 
     const body = JSON.stringify({ identity });
@@ -62,16 +61,23 @@ export default function VoiceClient() {
         enableIceRestart: true,
       });
 
-      // 🔊 Important: bind audio output for speaker
-      twilioDevice.audio.speakerDevices.set(
-        twilioDevice.audio.availableOutputDevices.get("default")
-      );
+      // Handle speaker devices when available
+      twilioDevice.audio.on("ready", () => {
+        const defaultSpeaker = twilioDevice.audio.availableOutputDevices.get("default");
+        if (defaultSpeaker) {
+          twilioDevice.audio.speakerDevices.set(defaultSpeaker);
+          log("🔊 Speaker device bound successfully");
+        } else {
+          log("⚠️ No default speaker found");
+        }
+      });
 
       twilioDevice.audio.on("deviceChange", () => {
-        log("Audio devices changed: speaker re-bound");
-        twilioDevice.audio.speakerDevices.set(
-          twilioDevice.audio.availableOutputDevices.get("default")
-        );
+        log("Audio devices changed: rebinding speakers");
+        const defaultSpeaker = twilioDevice.audio.availableOutputDevices.get("default");
+        if (defaultSpeaker) {
+          twilioDevice.audio.speakerDevices.set(defaultSpeaker);
+        }
       });
 
       twilioDevice.on("registered", () => {
@@ -88,7 +94,7 @@ export default function VoiceClient() {
       });
 
       twilioDevice.on("incoming", (conn) => {
-        log("Incoming call received - accepting automatically");
+        log("📞 Incoming call - accepting automatically");
         conn.accept();
         setActiveConnection(conn);
       });
@@ -97,16 +103,15 @@ export default function VoiceClient() {
         setStatusText("Call connected", "success");
         setActiveConnection(conn);
 
-        // 🔊 Ensure output routed when call connected
-        twilioDevice.audio.speakerDevices.set(
-          twilioDevice.audio.availableOutputDevices.get("default")
-        );
+        const defaultSpeaker = twilioDevice.audio.availableOutputDevices.get("default");
+        if (defaultSpeaker) {
+          twilioDevice.audio.speakerDevices.set(defaultSpeaker);
+        }
 
         conn.mute(false);
 
-        // 📈 Volume debug
-        conn.on("volume", (inputVolume, outputVolume) => {
-          console.log("Input Volume:", inputVolume, "Output Volume:", outputVolume);
+        conn.on("volume", (inVol, outVol) => {
+          console.log("Input Volume:", inVol, "Output Volume:", outVol);
         });
       });
 
