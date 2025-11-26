@@ -44,23 +44,59 @@ export default function VoiceClient() {
   // 🔧 FIX: Properly configure audio output devices
   function setupAudioOutput(deviceInstance, connection = null) {
     try {
+      if (!deviceInstance || !deviceInstance.audio) {
+        log("⚠️ Device or audio not available", "error");
+        return;
+      }
+
       const audio = deviceInstance.audio;
       
       // Get available output devices
       const outputDevices = audio.availableOutputDevices;
+      if (!outputDevices) {
+        log("⚠️ Available output devices not ready yet", "error");
+        return;
+      }
+      
       log(`Available output devices: ${outputDevices.size}`);
       
+      // 🔧 FIX: Check if speakerDevices exists and is accessible
+      if (!audio.speakerDevices) {
+        log("⚠️ speakerDevices not available yet, will retry", "error");
+        // Retry after a short delay
+        setTimeout(() => setupAudioOutput(deviceInstance, connection), 300);
+        return;
+      }
+
       // Try to set default speaker
       const defaultSpeaker = outputDevices.get("default");
-      if (defaultSpeaker) {
-        audio.speakerDevices.set(defaultSpeaker.deviceId);
-        log(`🔊 Speaker set to: ${defaultSpeaker.deviceId}`, "success");
+      if (defaultSpeaker && defaultSpeaker.deviceId) {
+        try {
+          audio.speakerDevices.set(defaultSpeaker.deviceId);
+          log(`🔊 Speaker set to: ${defaultSpeaker.deviceId}`, "success");
+        } catch (setErr) {
+          log(`⚠️ Could not set speaker device: ${setErr.message}`, "error");
+          // Try fallback
+          const devices = Array.from(outputDevices.values());
+          if (devices.length > 0 && devices[0].deviceId) {
+            try {
+              audio.speakerDevices.set(devices[0].deviceId);
+              log(`🔊 Speaker set to first available: ${devices[0].deviceId}`, "success");
+            } catch (fallbackErr) {
+              log(`⚠️ Fallback speaker set failed: ${fallbackErr.message}`, "error");
+            }
+          }
+        }
       } else {
         // Fallback: get first available device
         const devices = Array.from(outputDevices.values());
-        if (devices.length > 0) {
-          audio.speakerDevices.set(devices[0].deviceId);
-          log(`🔊 Speaker set to first available: ${devices[0].deviceId}`, "success");
+        if (devices.length > 0 && devices[0].deviceId) {
+          try {
+            audio.speakerDevices.set(devices[0].deviceId);
+            log(`🔊 Speaker set to first available: ${devices[0].deviceId}`, "success");
+          } catch (setErr) {
+            log(`⚠️ Could not set fallback speaker: ${setErr.message}`, "error");
+          }
         } else {
           log("⚠️ No output devices available", "error");
         }
@@ -76,24 +112,33 @@ export default function VoiceClient() {
         }
       }
 
-      // 🔧 FIX: Log audio state
-      log(`Audio input devices: ${audio.availableInputDevices.size}`);
-      log(`Audio output devices: ${audio.availableOutputDevices.size}`);
-      log(`Is input device set: ${audio.inputDevice !== null}`);
-      
-      // Check if speaker devices are set (speakerDevices is a Set)
-      const speakerDevicesSet = audio.speakerDevices;
-      const isOutputSet = speakerDevicesSet && speakerDevicesSet.size > 0;
-      log(`Is output device set: ${isOutputSet} (${speakerDevicesSet ? speakerDevicesSet.size : 0} devices)`);
-      
-      // Log which devices are actually set
-      if (speakerDevicesSet && speakerDevicesSet.size > 0) {
-        const deviceIds = Array.from(speakerDevicesSet);
-        log(`Speaker device IDs: ${deviceIds.join(", ")}`);
+      // 🔧 FIX: Log audio state (with safety checks)
+      try {
+        log(`Audio input devices: ${audio.availableInputDevices ? audio.availableInputDevices.size : 0}`);
+        log(`Audio output devices: ${audio.availableOutputDevices ? audio.availableOutputDevices.size : 0}`);
+        log(`Is input device set: ${audio.inputDevice !== null && audio.inputDevice !== undefined}`);
+        
+        // Check if speaker devices are set (speakerDevices is a Set)
+        const speakerDevicesSet = audio.speakerDevices;
+        if (speakerDevicesSet) {
+          const isOutputSet = speakerDevicesSet.size > 0;
+          log(`Is output device set: ${isOutputSet} (${speakerDevicesSet.size} devices)`);
+          
+          // Log which devices are actually set
+          if (isOutputSet) {
+            const deviceIds = Array.from(speakerDevicesSet);
+            log(`Speaker device IDs: ${deviceIds.join(", ")}`);
+          }
+        } else {
+          log("⚠️ speakerDevices is not accessible", "error");
+        }
+      } catch (logErr) {
+        log(`⚠️ Error logging audio state: ${logErr.message}`, "error");
       }
       
     } catch (err) {
       log(`Error setting up audio: ${err.message}`, "error");
+      log(`Error stack: ${err.stack}`, "error");
     }
   }
 
@@ -138,16 +183,29 @@ export default function VoiceClient() {
         setStatusText("Device registered & ready", "success");
         setDevice(twilioDevice);
         setupAudioOutput(twilioDevice);
+        log(`Device state: ${twilioDevice.state}`, "success");
       });
 
       twilioDevice.on("error", (err) => {
         setStatusText(`Device error: ${err.message}`, "error");
         log(`Device error details: ${JSON.stringify(err)}`, "error");
+        log(`Device state: ${twilioDevice.state}`, "error");
       });
 
       twilioDevice.on("ready", () => {
         setStatusText("Device ready", "success");
         setupAudioOutput(twilioDevice);
+        log(`Device state: ${twilioDevice.state}`, "success");
+      });
+
+      // 🔧 FIX: Monitor device state changes
+      twilioDevice.on("tokenWillExpire", () => {
+        log("⚠️ Token will expire soon, refreshing...", "error");
+      });
+
+      twilioDevice.on("tokenExpired", () => {
+        log("❌ Token expired, re-initialize device", "error");
+        setStatusText("Token expired, please re-initialize", "error");
       });
 
       twilioDevice.on("incoming", (conn) => {
@@ -259,14 +317,49 @@ export default function VoiceClient() {
 
     setStatusText(`Calling ${dialTo}...`);
     try {
-      const conn = device.connect({ params: { To: dialTo, From: identity } });
+      // 🔧 FIX: Format the 'To' parameter correctly
+      // If it's an agent ID (doesn't start with +), add 'client:' prefix for Twilio
+      let toParam = dialTo.trim();
+      if (!toParam.startsWith("+") && !toParam.startsWith("client:")) {
+        // It's an agent ID, add client: prefix for Twilio WebRTC
+        toParam = `client:${toParam}`;
+        log(`Formatted agent ID as: ${toParam}`);
+      }
+
+      // 🔧 FIX: Ensure device is ready before connecting
+      if (device.state !== "registered") {
+        log(`⚠️ Device not ready (state: ${device.state}), waiting...`, "error");
+        setStatusText("Device not ready, please wait...", "error");
+        return;
+      }
+
+      log(`Connecting to: ${toParam} (from: ${identity})`);
+      const conn = device.connect({ 
+        params: { 
+          To: toParam, 
+          From: identity 
+        } 
+      });
+      
+      if (!conn) {
+        throw new Error("Connection object is null");
+      }
+      
       setActiveConnection(conn);
       
       // 🔧 FIX: Don't setup audio here - wait for 'connect' event
       // The 'connect' event handler will call setupConnectionAudio
       log("Call initiated, waiting for connection...");
+      
+      // 🔧 FIX: Add error handler for connection
+      conn.on("error", (err) => {
+        log(`Connection error: ${err.message}`, "error");
+        setStatusText(`Call error: ${err.message}`, "error");
+      });
+      
     } catch (err) {
       log(`Error placing call: ${err.message}`, "error");
+      log(`Error stack: ${err.stack}`, "error");
       setStatusText(`Call failed: ${err.message}`, "error");
     }
   };
