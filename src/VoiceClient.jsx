@@ -333,22 +333,14 @@ export default function VoiceClient() {
     setStatusText(`Calling ${dialTo}...`);
     
     try {
-      // 🔧 FIX: Format the 'To' parameter correctly
-      // If it's an agent ID (doesn't start with +), add 'client:' prefix for Twilio
-      let toParam = dialTo.trim();
-      if (!toParam.startsWith("+") && !toParam.startsWith("client:")) {
-        // It's an agent ID, add client: prefix for Twilio WebRTC
-        toParam = `client:${toParam}`;
-        log(`Formatted agent ID as: ${toParam}`);
-      }
-
-      log(`Connecting to: ${toParam} (from: ${identity})`);
+      // Use exact same approach as working code - pass dialTo directly
+      // The backend will handle the client: prefix if needed
+      log(`Connecting to: ${dialTo} (from: ${identity})`);
       
-      // Use simple synchronous approach like working code
-      // The device-level event handlers (twilioDevice.on("connect")) will handle the connection
+      // Exact same call as working code
       const conn = device.connect({ 
         params: { 
-          To: toParam, 
+          To: dialTo, 
           From: identity 
         } 
       });
