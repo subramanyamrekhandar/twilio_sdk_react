@@ -401,14 +401,26 @@ export default function VoiceClient() {
         setStatusText("Call cancelled", "error");
       });
 
-      conn.on("disconnect", () => {
-        log("📴 Connection DISCONNECTED", "info");
+      conn.on("disconnect", (call) => {
+        const status = conn.status ? conn.status() : "unknown";
+        log(`📴 Connection DISCONNECTED (status: ${status})`, "info");
+        if (call) {
+          log(`Disconnect call details: ${JSON.stringify(call)}`, "info");
+        }
         setActiveConnection(null);
+        setStatusText("Call disconnected", "info");
       });
 
       conn.on("error", (err) => {
-        log(`❌ Connection ERROR: ${err.message}`, "error");
+        const status = conn.status ? conn.status() : "unknown";
+        log(`❌ Connection ERROR: ${err.message} (status: ${status})`, "error");
         log(`Connection error details: ${JSON.stringify(err)}`, "error");
+        if (err.code) {
+          log(`Error code: ${err.code}`, "error");
+        }
+        if (err.twilioError) {
+          log(`Twilio error: ${JSON.stringify(err.twilioError)}`, "error");
+        }
         setStatusText(`Call error: ${err.message}`, "error");
       });
 
@@ -416,10 +428,52 @@ export default function VoiceClient() {
         log(`⚠️ Connection warning: ${name} - ${JSON.stringify(data)}`, "error");
       });
 
+      // 🔧 FIX: Monitor connection state changes for debugging
+      let statusCheckInterval;
+      let lastStatus = "unknown";
+      const checkStatus = () => {
+        try {
+          if (conn && conn.status) {
+            const currentStatus = conn.status();
+            if (currentStatus !== lastStatus) {
+              log(`🔄 Connection status changed: ${lastStatus} → ${currentStatus}`);
+              lastStatus = currentStatus;
+            }
+            
+            // Stop checking if connection is closed/disconnected
+            if (currentStatus === "closed" || currentStatus === "disconnected") {
+              if (statusCheckInterval) {
+                clearInterval(statusCheckInterval);
+                statusCheckInterval = null;
+                log("Stopped status monitoring (connection closed)");
+              }
+            }
+          }
+        } catch (err) {
+          log(`Error checking status: ${err.message}`, "error");
+        }
+      };
+      
+      // Check status every 500ms for debugging (first 10 seconds)
+      statusCheckInterval = setInterval(checkStatus, 500);
+      
+      // Stop checking after 10 seconds
+      setTimeout(() => {
+        if (statusCheckInterval) {
+          clearInterval(statusCheckInterval);
+          statusCheckInterval = null;
+          log("Stopped status monitoring (10s timeout)");
+        }
+      }, 10000);
+
       // 🔧 FIX: Don't setup audio here - wait for 'connect' event
       // The 'connect' event handler will call setupConnectionAudio
       log("Call initiated, waiting for connection...");
       log("Listening for: accept, reject, cancel, disconnect, error, warning events");
+      log("⚠️ CRITICAL: Check your backend terminal for:");
+      log("   - POST /api/v1/telephony/inbound (should appear when call is placed)");
+      log("   - WebRTC call with client identity: agent_T2aWMVrm80Y, agent found: True/False");
+      log("   If you DON'T see these logs, Twilio isn't reaching your backend!");
       
     } catch (err) {
       log(`Error placing call: ${err.message}`, "error");
