@@ -118,7 +118,8 @@ export default function VoiceClient() {
         log(`Audio output devices: ${audio.availableOutputDevices ? audio.availableOutputDevices.size : 0}`);
         log(`Is input device set: ${audio.inputDevice !== null && audio.inputDevice !== undefined}`);
         
-        // Check if speaker devices are set (speakerDevices is a Set)
+        // 🔧 FIX: speakerDevices might not be accessible until a connection is active
+        // This is normal - don't treat it as an error
         const speakerDevicesSet = audio.speakerDevices;
         if (speakerDevicesSet) {
           const isOutputSet = speakerDevicesSet.size > 0;
@@ -130,7 +131,8 @@ export default function VoiceClient() {
             log(`Speaker device IDs: ${deviceIds.join(", ")}`);
           }
         } else {
-          log("⚠️ speakerDevices is not accessible", "error");
+          // This is normal before a connection is established
+          log("ℹ️ speakerDevices not accessible yet (will be available when connection is active)");
         }
       } catch (logErr) {
         log(`⚠️ Error logging audio state: ${logErr.message}`, "error");
@@ -216,14 +218,26 @@ export default function VoiceClient() {
       });
 
       twilioDevice.on("connect", (conn) => {
+        log("✅ CONNECT event fired!", "success");
         setStatusText("Call connected", "success");
         setActiveConnection(conn);
         setupConnectionAudio(conn, twilioDevice);
       });
 
-      twilioDevice.on("disconnect", () => {
+      twilioDevice.on("disconnect", (conn) => {
+        log("📴 DISCONNECT event fired", "info");
         setStatusText("Call disconnected", "info");
         setActiveConnection(null);
+      });
+
+      // 🔧 FIX: Add all connection state event handlers
+      twilioDevice.on("offline", () => {
+        log("📴 Device went offline", "error");
+        setStatusText("Device offline", "error");
+      });
+
+      twilioDevice.on("warning", (name, data) => {
+        log(`⚠️ Device warning: ${name} - ${JSON.stringify(data)}`, "error");
       });
 
       setStatusText("Device initializing...", "info");
@@ -334,6 +348,8 @@ export default function VoiceClient() {
       }
 
       log(`Connecting to: ${toParam} (from: ${identity})`);
+      log(`Device state before connect: ${device.state}`);
+      
       const conn = device.connect({ 
         params: { 
           To: toParam, 
@@ -345,17 +361,45 @@ export default function VoiceClient() {
         throw new Error("Connection object is null");
       }
       
+      log(`Connection object created: ${conn.constructor.name}`);
+      log(`Connection status: ${conn.status ? conn.status() : 'unknown'}`);
+      
       setActiveConnection(conn);
       
+      // 🔧 FIX: Add ALL connection event handlers immediately
+      conn.on("accept", () => {
+        log("✅ Connection ACCEPTED", "success");
+      });
+
+      conn.on("reject", () => {
+        log("❌ Connection REJECTED", "error");
+        setStatusText("Call rejected", "error");
+      });
+
+      conn.on("cancel", () => {
+        log("❌ Connection CANCELLED", "error");
+        setStatusText("Call cancelled", "error");
+      });
+
+      conn.on("disconnect", () => {
+        log("📴 Connection DISCONNECTED", "info");
+        setActiveConnection(null);
+      });
+
+      conn.on("error", (err) => {
+        log(`❌ Connection ERROR: ${err.message}`, "error");
+        log(`Connection error details: ${JSON.stringify(err)}`, "error");
+        setStatusText(`Call error: ${err.message}`, "error");
+      });
+
+      conn.on("warning", (name, data) => {
+        log(`⚠️ Connection warning: ${name} - ${JSON.stringify(data)}`, "error");
+      });
+
       // 🔧 FIX: Don't setup audio here - wait for 'connect' event
       // The 'connect' event handler will call setupConnectionAudio
       log("Call initiated, waiting for connection...");
-      
-      // 🔧 FIX: Add error handler for connection
-      conn.on("error", (err) => {
-        log(`Connection error: ${err.message}`, "error");
-        setStatusText(`Call error: ${err.message}`, "error");
-      });
+      log("Listening for: accept, reject, cancel, disconnect, error, warning events");
       
     } catch (err) {
       log(`Error placing call: ${err.message}`, "error");
@@ -389,9 +433,14 @@ export default function VoiceClient() {
       <div className="bg-yellow-100 border-l-4 border-yellow-500 p-4 text-sm rounded">
         <p className="font-semibold">Steps:</p>
         <p>1. Initialize device</p>
-        <p>2. Enter phone / agent ID</p>
+        <p>2. Enter phone / agent ID (e.g., agent_T2aWMVrm80Y)</p>
         <p>3. Call & Speak</p>
         <p className="mt-2 font-semibold text-red-600">⚠️ Make sure your browser volume is up and speakers are enabled!</p>
+        <p className="mt-2 text-xs text-gray-600">
+          <strong>Troubleshooting:</strong> If call doesn't connect, check backend logs for:
+          <br />- POST /api/v1/telephony/inbound (should appear when call is placed)
+          <br />- Agent lookup logs (should show if agent was found)
+        </p>
       </div>
 
       <div>
