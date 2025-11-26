@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { Device } from "@twilio/voice-sdk";
 
 export default function VoiceClient() {
@@ -9,14 +9,16 @@ export default function VoiceClient() {
   const [statusType, setStatusType] = useState("info");
   const [device, setDevice] = useState(null);
   const [activeConnection, setActiveConnection] = useState(null);
-
   const logRef = useRef(null);
 
   function log(message, type = "info") {
     const timestamp = new Date().toISOString();
     const prefix =
       type === "error" ? "❌" : type === "success" ? "✅" : "ℹ️";
-    logRef.current.value = `${timestamp} ${prefix} ${message}\n${logRef.current.value}`;
+    if (logRef.current) {
+      logRef.current.value = `${timestamp} ${prefix} ${message}\n${logRef.current.value}`;
+    }
+    console.log(`[VoiceClient] ${message}`);
   }
 
   function setStatusText(message, type = "info") {
@@ -27,32 +29,135 @@ export default function VoiceClient() {
 
   async function getToken() {
     const endpoint = `${backendUrl.replace(/\/$/, "")}/api/v1/telephony/access-token`;
-
     log(`Requesting token from ${endpoint}`);
-
-    const body = JSON.stringify({ identity });
-
     const res = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body,
+      body: JSON.stringify({ identity }),
     });
-
-    if (!res.ok) {
-      throw new Error(`Token request failed: ${await res.text()}`);
-    }
-
+    if (!res.ok) throw new Error(`Token request failed: ${await res.text()}`);
     const data = await res.json();
     log(`Token received. Identity: ${data.identity}`, "success");
     return data.token;
   }
 
+  // 🔧 FIX: Properly configure audio output devices
+  function setupAudioOutput(deviceInstance, connection = null) {
+    try {
+      if (!deviceInstance || !deviceInstance.audio) {
+        log("⚠️ Device or audio not available", "error");
+        return;
+      }
+
+      const audio = deviceInstance.audio;
+      
+      // Get available output devices
+      const outputDevices = audio.availableOutputDevices;
+      if (!outputDevices) {
+        log("⚠️ Available output devices not ready yet", "error");
+        return;
+      }
+      
+      log(`Available output devices: ${outputDevices.size}`);
+      
+      // 🔧 FIX: Check if speakerDevices exists and is accessible
+      if (!audio.speakerDevices) {
+        log("⚠️ speakerDevices not available yet, will retry", "error");
+        // Retry after a short delay
+        setTimeout(() => setupAudioOutput(deviceInstance, connection), 300);
+        return;
+      }
+
+      // Try to set default speaker
+      const defaultSpeaker = outputDevices.get("default");
+      if (defaultSpeaker && defaultSpeaker.deviceId) {
+        try {
+          audio.speakerDevices.set(defaultSpeaker.deviceId);
+          log(`🔊 Speaker set to: ${defaultSpeaker.deviceId}`, "success");
+        } catch (setErr) {
+          log(`⚠️ Could not set speaker device: ${setErr.message}`, "error");
+          // Try fallback
+          const devices = Array.from(outputDevices.values());
+          if (devices.length > 0 && devices[0].deviceId) {
+            try {
+              audio.speakerDevices.set(devices[0].deviceId);
+              log(`🔊 Speaker set to first available: ${devices[0].deviceId}`, "success");
+            } catch (fallbackErr) {
+              log(`⚠️ Fallback speaker set failed: ${fallbackErr.message}`, "error");
+            }
+          }
+        }
+      } else {
+        // Fallback: get first available device
+        const devices = Array.from(outputDevices.values());
+        if (devices.length > 0 && devices[0].deviceId) {
+          try {
+            audio.speakerDevices.set(devices[0].deviceId);
+            log(`🔊 Speaker set to first available: ${devices[0].deviceId}`, "success");
+          } catch (setErr) {
+            log(`⚠️ Could not set fallback speaker: ${setErr.message}`, "error");
+          }
+        } else {
+          log("⚠️ No output devices available", "error");
+        }
+      }
+
+      // 🔧 FIX: Ensure connection is not muted (with safety check)
+      if (connection && typeof connection.mute === "function") {
+        try {
+          connection.mute(false);
+          log("🔊 Connection unmuted", "success");
+        } catch (muteErr) {
+          log(`⚠️ Could not unmute in setupAudioOutput: ${muteErr.message}`, "error");
+        }
+      }
+
+      // 🔧 FIX: Log audio state (with safety checks)
+      try {
+        log(`Audio input devices: ${audio.availableInputDevices ? audio.availableInputDevices.size : 0}`);
+        log(`Audio output devices: ${audio.availableOutputDevices ? audio.availableOutputDevices.size : 0}`);
+        log(`Is input device set: ${audio.inputDevice !== null && audio.inputDevice !== undefined}`);
+        
+        // 🔧 FIX: speakerDevices might not be accessible until a connection is active
+        // This is normal - don't treat it as an error
+        const speakerDevicesSet = audio.speakerDevices;
+        if (speakerDevicesSet) {
+          const isOutputSet = speakerDevicesSet.size > 0;
+          log(`Is output device set: ${isOutputSet} (${speakerDevicesSet.size} devices)`);
+          
+          // Log which devices are actually set
+          if (isOutputSet) {
+            const deviceIds = Array.from(speakerDevicesSet);
+            log(`Speaker device IDs: ${deviceIds.join(", ")}`);
+          }
+        } else {
+          // This is normal before a connection is established
+          log("ℹ️ speakerDevices not accessible yet (will be available when connection is active)");
+        }
+      } catch (logErr) {
+        log(`⚠️ Error logging audio state: ${logErr.message}`, "error");
+      }
+      
+    } catch (err) {
+      log(`Error setting up audio: ${err.message}`, "error");
+      log(`Error stack: ${err.stack}`, "error");
+    }
+  }
+
   const initDevice = async () => {
     try {
       setStatusText("Requesting token...", "info");
-
-      // Request microphone permissions explicitly
-      await navigator.mediaDevices.getUserMedia({ audio: true });
+      
+      // 🔧 FIX: Request both audio input AND ensure audio context is active
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        log("✅ Microphone access granted", "success");
+        // Stop the stream immediately - we just needed permission
+        stream.getTracks().forEach(track => track.stop());
+      } catch (err) {
+        log(`⚠️ Microphone permission denied: ${err.message}`, "error");
+        throw new Error("Microphone access required");
+      }
 
       const token = await getToken();
 
@@ -60,51 +165,202 @@ export default function VoiceClient() {
         codecPreferences: ["opus", "pcmu"],
         fakeLocalDTMF: true,
         enableRingingState: true,
+        enableIceRestart: true,
+        // 🔧 FIX: Enable audio output explicitly
+        allowIncomingWhileBusy: false,
+      });
+
+      // 🔧 FIX: Setup audio when device is ready
+      twilioDevice.audio.on("ready", () => {
+        log("Audio subsystem ready");
+        setupAudioOutput(twilioDevice);
+      });
+
+      twilioDevice.audio.on("deviceChange", () => {
+        log("Audio devices changed");
+        setupAudioOutput(twilioDevice);
       });
 
       twilioDevice.on("registered", () => {
         setStatusText("Device registered & ready", "success");
         setDevice(twilioDevice);
-      });
-
-      twilioDevice.on("ready", () => {
-        setStatusText("Device ready", "success");
+        setupAudioOutput(twilioDevice);
+        log(`Device state: ${twilioDevice.state}`, "success");
       });
 
       twilioDevice.on("error", (err) => {
         setStatusText(`Device error: ${err.message}`, "error");
+        log(`Device error details: ${JSON.stringify(err)}`, "error");
+        log(`Device state: ${twilioDevice.state}`, "error");
+      });
+
+      twilioDevice.on("ready", () => {
+        setStatusText("Device ready", "success");
+        setupAudioOutput(twilioDevice);
+        log(`Device state: ${twilioDevice.state}`, "success");
+      });
+
+      // 🔧 FIX: Monitor device state changes
+      twilioDevice.on("tokenWillExpire", () => {
+        log("⚠️ Token will expire soon, refreshing...", "error");
+      });
+
+      twilioDevice.on("tokenExpired", () => {
+        log("❌ Token expired, re-initialize device", "error");
+        setStatusText("Token expired, please re-initialize", "error");
       });
 
       twilioDevice.on("incoming", (conn) => {
-        log("Incoming call received - accepting automatically");
+        log("📞 Incoming call - accepting...");
         conn.accept();
         setActiveConnection(conn);
+        setupConnectionAudio(conn, twilioDevice);
       });
 
       twilioDevice.on("connect", (conn) => {
+        log("✅ CONNECT event fired!", "success");
         setStatusText("Call connected", "success");
         setActiveConnection(conn);
+        // Setup audio when connection is established
+        setupConnectionAudio(conn, twilioDevice);
       });
 
-      twilioDevice.on("disconnect", () => {
+      twilioDevice.on("disconnect", (conn) => {
+        log("📴 DISCONNECT event fired", "info");
         setStatusText("Call disconnected", "info");
         setActiveConnection(null);
       });
 
+      // 🔧 FIX: Add all connection state event handlers
+      twilioDevice.on("offline", () => {
+        log("📴 Device went offline", "error");
+        setStatusText("Device offline", "error");
+      });
+
+      twilioDevice.on("warning", (name, data) => {
+        log(`⚠️ Device warning: ${name} - ${JSON.stringify(data)}`, "error");
+      });
+
       setStatusText("Device initializing...", "info");
       await twilioDevice.register();
+
     } catch (err) {
       setStatusText(`Init failed: ${err.message}`, "error");
+      log(`Init error: ${err.stack}`, "error");
     }
   };
+
+  // 🔧 FIX: Dedicated function to setup connection audio
+  function setupConnectionAudio(connection, deviceInstance) {
+    try {
+      // 🔧 FIX: Verify connection is valid and has required methods
+      if (!connection) {
+        log("⚠️ Connection is null, cannot setup audio", "error");
+        return;
+      }
+
+      // Check if connection has mute method (might not be ready yet)
+      if (typeof connection.mute !== "function") {
+        log("⚠️ Connection not ready yet, will retry...", "info");
+        // Retry after a short delay
+        setTimeout(() => setupConnectionAudio(connection, deviceInstance), 200);
+        return;
+      }
+
+      // Ensure unmuted
+      try {
+        connection.mute(false);
+        log("🔊 Connection unmuted", "success");
+      } catch (muteErr) {
+        log(`⚠️ Could not unmute connection: ${muteErr.message}`, "error");
+      }
+
+      // Setup audio output
+      setupAudioOutput(deviceInstance, connection);
+
+      // 🔧 FIX: Monitor volume levels to verify audio is flowing
+      if (typeof connection.on === "function") {
+        connection.on("volume", (inputVolume, outputVolume) => {
+          // Log only if there's significant volume (to avoid spam)
+          if (inputVolume > 0.01 || outputVolume > 0.01) {
+            log(`📊 Audio levels - Input: ${inputVolume.toFixed(2)}, Output: ${outputVolume.toFixed(2)}`);
+          }
+        });
+
+        // 🔧 FIX: Monitor mute state changes
+        connection.on("mute", (isMuted) => {
+          log(`🔇 Mute state changed: ${isMuted ? "MUTED" : "UNMUTED"}`);
+          if (isMuted) {
+            log("⚠️ WARNING: Connection is muted! Audio will not play.", "error");
+          }
+        });
+      }
+
+      // 🔧 FIX: Log connection status (with safety check)
+      try {
+        const status = connection.status ? connection.status() : "unknown";
+        const isMuted = connection.isMuted ? connection.isMuted() : "unknown";
+        log(`Connection status: ${status}`);
+        log(`Connection muted: ${isMuted}`);
+      } catch (statusErr) {
+        log(`⚠️ Could not get connection status: ${statusErr.message}`, "error");
+      }
+      
+      // 🔧 FIX: Force unmute after a short delay (in case of race condition)
+      setTimeout(() => {
+        try {
+          if (connection && connection.status && connection.status() === "open") {
+            if (typeof connection.mute === "function") {
+              connection.mute(false);
+              log("🔊 Force unmuted connection (delayed)", "success");
+            }
+          }
+        } catch (err) {
+          log(`⚠️ Delayed unmute failed: ${err.message}`, "error");
+        }
+      }, 500);
+
+    } catch (err) {
+      log(`Error setting up connection audio: ${err.message}`, "error");
+      log(`Error stack: ${err.stack}`, "error");
+    }
+  }
 
   const placeCall = () => {
     if (!device) return log("Device not initialized", "error");
     if (!dialTo) return log("Enter number / agent ID", "error");
 
     setStatusText(`Calling ${dialTo}...`);
-    const conn = device.connect({ params: { To: dialTo, From: identity } });
-    setActiveConnection(conn);
+    
+    try {
+      // 🔧 FIX: Format the 'To' parameter correctly
+      // If it's an agent ID (doesn't start with +), add 'client:' prefix for Twilio
+      let toParam = dialTo.trim();
+      if (!toParam.startsWith("+") && !toParam.startsWith("client:")) {
+        // It's an agent ID, add client: prefix for Twilio WebRTC
+        toParam = `client:${toParam}`;
+        log(`Formatted agent ID as: ${toParam}`);
+      }
+
+      log(`Connecting to: ${toParam} (from: ${identity})`);
+      
+      // Use simple synchronous approach like working code
+      // The device-level event handlers (twilioDevice.on("connect")) will handle the connection
+      const conn = device.connect({ 
+        params: { 
+          To: toParam, 
+          From: identity 
+        } 
+      });
+      
+      // Set connection immediately (device events will handle the rest)
+      setActiveConnection(conn);
+      log("Call initiated");
+      
+    } catch (err) {
+      log(`Error placing call: ${err.message}`, "error");
+      setStatusText(`Call failed: ${err.message}`, "error");
+    }
   };
 
   const hangupCall = () => {
@@ -113,32 +369,62 @@ export default function VoiceClient() {
     setActiveConnection(null);
   };
 
+  // 🔧 FIX: Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (activeConnection) {
+        activeConnection.disconnect();
+      }
+      if (device) {
+        device.destroy();
+      }
+    };
+  }, [device, activeConnection]);
+
   return (
     <div className="max-w-xl mx-auto bg-white p-8 mt-10 rounded-xl shadow-lg space-y-6">
       <h1 className="text-2xl font-bold">🎤 Namunah AI Voice Client</h1>
-
+      
       <div className="bg-yellow-100 border-l-4 border-yellow-500 p-4 text-sm rounded">
         <p className="font-semibold">Steps:</p>
         <p>1. Initialize device</p>
-        <p>2. Enter phone / agent ID</p>
+        <p>2. Enter phone / agent ID (e.g., agent_T2aWMVrm80Y)</p>
         <p>3. Call & Speak</p>
+        <p className="mt-2 font-semibold text-red-600">⚠️ Make sure your browser volume is up and speakers are enabled!</p>
+        <p className="mt-2 text-xs text-gray-600">
+          <strong>Troubleshooting:</strong> If call doesn't connect, check backend logs for:
+          <br />- POST /api/v1/telephony/inbound (should appear when call is placed)
+          <br />- Agent lookup logs (should show if agent was found)
+        </p>
       </div>
 
       <div>
-        <label className="font-semibold">Identity</label>
+        <label className="block text-sm font-medium mb-1">Backend URL:</label>
         <input
-          className="w-full p-3 border border-gray-300 rounded mt-1"
-          value={identity}
-          onChange={(e) => setIdentity(e.target.value)}
+          className="w-full p-3 border mt-1 rounded"
+          value={backendUrl}
+          onChange={(e) => setBackendUrl(e.target.value)}
+          placeholder="https://your-backend.com"
         />
       </div>
 
       <div>
-        <label className="font-semibold">Dial To</label>
+        <label className="block text-sm font-medium mb-1">Identity:</label>
         <input
-          className="w-full p-3 border border-gray-300 rounded mt-1"
+          className="w-full p-3 border mt-1 rounded"
+          value={identity}
+          onChange={(e) => setIdentity(e.target.value)}
+          placeholder="agent_web_01"
+        />
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium mb-1">Dial To (Phone Number or Agent ID):</label>
+        <input
+          className="w-full p-3 border mt-1 rounded"
           value={dialTo}
           onChange={(e) => setDialTo(e.target.value)}
+          placeholder="+1234567890 or agent-uuid"
         />
       </div>
 
@@ -155,23 +441,18 @@ export default function VoiceClient() {
       </div>
 
       <div className="flex gap-3">
-        <button
-          className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded"
-          onClick={initDevice}
-        >
+        <button className="bg-green-600 text-white px-4 py-2 rounded" onClick={initDevice}>
           Initialize
         </button>
-
         <button
-          className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded disabled:opacity-40"
+          className="bg-blue-600 text-white px-4 py-2 rounded disabled:opacity-40"
           onClick={placeCall}
           disabled={!device || activeConnection}
         >
           Call
         </button>
-
         <button
-          className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded disabled:opacity-40"
+          className="bg-red-600 text-white px-4 py-2 rounded disabled:opacity-40"
           onClick={hangupCall}
           disabled={!activeConnection}
         >
@@ -180,13 +461,15 @@ export default function VoiceClient() {
       </div>
 
       <div>
-        <h3 className="text-lg font-semibold">📋 Logs</h3>
+        <label className="block text-sm font-medium mb-1">Debug Logs:</label>
         <textarea
           ref={logRef}
           readOnly
-          className="w-full h-40 border border-gray-300 p-2 rounded font-mono text-sm"
+          className="w-full h-60 border p-2 rounded font-mono text-xs"
+          placeholder="Logs will appear here..."
         />
       </div>
     </div>
   );
 }
+
