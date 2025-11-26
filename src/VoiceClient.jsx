@@ -325,7 +325,7 @@ export default function VoiceClient() {
     }
   }
 
-  const placeCall = () => {
+  const placeCall = async () => {
     if (!device) return log("Device not initialized", "error");
     if (!dialTo) return log("Enter number / agent ID", "error");
 
@@ -350,18 +350,38 @@ export default function VoiceClient() {
       log(`Connecting to: ${toParam} (from: ${identity})`);
       log(`Device state before connect: ${device.state}`);
       
-      const conn = device.connect({ 
+      // 🔧 FIX: device.connect() returns a Promise in newer SDK versions
+      // We need to await it to get the actual Connection object
+      const connPromise = device.connect({ 
         params: { 
           To: toParam, 
           From: identity 
         } 
       });
       
+      // Check if it's a Promise or Connection object
+      let conn;
+      if (connPromise && typeof connPromise.then === "function") {
+        // It's a Promise - await it
+        log("Waiting for connection promise to resolve...");
+        conn = await connPromise;
+        log(`Connection promise resolved: ${conn ? conn.constructor.name : 'null'}`);
+      } else {
+        // It's already a Connection object (older SDK version)
+        conn = connPromise;
+        log(`Connection object created directly: ${conn ? conn.constructor.name : 'null'}`);
+      }
+      
       if (!conn) {
         throw new Error("Connection object is null");
       }
       
-      log(`Connection object created: ${conn.constructor.name}`);
+      // Verify it's a Connection object with .on method
+      if (typeof conn.on !== "function") {
+        throw new Error(`Connection object doesn't have .on method. Type: ${conn.constructor.name}`);
+      }
+      
+      log(`Connection object ready: ${conn.constructor.name}`);
       log(`Connection status: ${conn.status ? conn.status() : 'unknown'}`);
       
       setActiveConnection(conn);
