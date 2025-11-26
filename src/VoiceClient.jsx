@@ -9,6 +9,7 @@ export default function VoiceClient() {
   const [statusType, setStatusType] = useState("info");
   const [device, setDevice] = useState(null);
   const [activeConnection, setActiveConnection] = useState(null);
+  const [micStream, setMicStream] = useState(null); // Keep microphone stream active
   const logRef = useRef(null);
 
   function log(message, type = "info") {
@@ -148,12 +149,14 @@ export default function VoiceClient() {
     try {
       setStatusText("Requesting token...", "info");
       
-      // 🔧 FIX: Request both audio input AND ensure audio context is active
+      // 🔧 FIX: Request microphone access - keep stream active for Twilio
+      let stream = null;
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         log("✅ Microphone access granted", "success");
-        // Stop the stream immediately - we just needed permission
-        stream.getTracks().forEach(track => track.stop());
+        // Keep the stream active - Twilio SDK needs it when calls are made
+        setMicStream(stream);
+        log("✅ Microphone stream kept active", "success");
       } catch (err) {
         log(`⚠️ Microphone permission denied: ${err.message}`, "error");
         throw new Error("Microphone access required");
@@ -166,9 +169,10 @@ export default function VoiceClient() {
         fakeLocalDTMF: true,
         enableRingingState: true,
         enableIceRestart: true,
-        // 🔧 FIX: Enable audio output explicitly
         allowIncomingWhileBusy: false,
       });
+
+      // Microphone stream is already active and will be used by Twilio automatically
 
       // 🔧 FIX: Setup audio when device is ready
       twilioDevice.audio.on("ready", () => {
@@ -370,8 +374,13 @@ export default function VoiceClient() {
       if (device) {
         device.destroy();
       }
+      // Stop microphone stream on cleanup
+      if (micStream) {
+        micStream.getTracks().forEach(track => track.stop());
+        setMicStream(null);
+      }
     };
-  }, [device, activeConnection]);
+  }, [device, activeConnection, micStream]);
 
   return (
     <div className="max-w-xl mx-auto bg-white p-8 mt-10 rounded-xl shadow-lg space-y-6">
