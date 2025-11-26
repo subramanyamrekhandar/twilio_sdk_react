@@ -66,17 +66,31 @@ export default function VoiceClient() {
         }
       }
 
-      // 🔧 FIX: Ensure connection is not muted
-      if (connection) {
-        connection.mute(false);
-        log("🔊 Connection unmuted", "success");
+      // 🔧 FIX: Ensure connection is not muted (with safety check)
+      if (connection && typeof connection.mute === "function") {
+        try {
+          connection.mute(false);
+          log("🔊 Connection unmuted", "success");
+        } catch (muteErr) {
+          log(`⚠️ Could not unmute in setupAudioOutput: ${muteErr.message}`, "error");
+        }
       }
 
       // 🔧 FIX: Log audio state
       log(`Audio input devices: ${audio.availableInputDevices.size}`);
       log(`Audio output devices: ${audio.availableOutputDevices.size}`);
       log(`Is input device set: ${audio.inputDevice !== null}`);
-      log(`Is output device set: ${audio.speakerDevices.size > 0}`);
+      
+      // Check if speaker devices are set (speakerDevices is a Set)
+      const speakerDevicesSet = audio.speakerDevices;
+      const isOutputSet = speakerDevicesSet && speakerDevicesSet.size > 0;
+      log(`Is output device set: ${isOutputSet} (${speakerDevicesSet ? speakerDevicesSet.size : 0} devices)`);
+      
+      // Log which devices are actually set
+      if (speakerDevicesSet && speakerDevicesSet.size > 0) {
+        const deviceIds = Array.from(speakerDevicesSet);
+        log(`Speaker device IDs: ${deviceIds.join(", ")}`);
+      }
       
     } catch (err) {
       log(`Error setting up audio: ${err.message}`, "error");
@@ -166,43 +180,76 @@ export default function VoiceClient() {
   // 🔧 FIX: Dedicated function to setup connection audio
   function setupConnectionAudio(connection, deviceInstance) {
     try {
+      // 🔧 FIX: Verify connection is valid and has required methods
+      if (!connection) {
+        log("⚠️ Connection is null, cannot setup audio", "error");
+        return;
+      }
+
+      // Check if connection has mute method (might not be ready yet)
+      if (typeof connection.mute !== "function") {
+        log("⚠️ Connection not ready yet, will retry...", "info");
+        // Retry after a short delay
+        setTimeout(() => setupConnectionAudio(connection, deviceInstance), 200);
+        return;
+      }
+
       // Ensure unmuted
-      connection.mute(false);
-      log("🔊 Connection unmuted", "success");
+      try {
+        connection.mute(false);
+        log("🔊 Connection unmuted", "success");
+      } catch (muteErr) {
+        log(`⚠️ Could not unmute connection: ${muteErr.message}`, "error");
+      }
 
       // Setup audio output
       setupAudioOutput(deviceInstance, connection);
 
       // 🔧 FIX: Monitor volume levels to verify audio is flowing
-      connection.on("volume", (inputVolume, outputVolume) => {
-        // Log only if there's significant volume (to avoid spam)
-        if (inputVolume > 0.01 || outputVolume > 0.01) {
-          log(`📊 Audio levels - Input: ${inputVolume.toFixed(2)}, Output: ${outputVolume.toFixed(2)}`);
-        }
-      });
+      if (typeof connection.on === "function") {
+        connection.on("volume", (inputVolume, outputVolume) => {
+          // Log only if there's significant volume (to avoid spam)
+          if (inputVolume > 0.01 || outputVolume > 0.01) {
+            log(`📊 Audio levels - Input: ${inputVolume.toFixed(2)}, Output: ${outputVolume.toFixed(2)}`);
+          }
+        });
 
-      // 🔧 FIX: Monitor mute state changes
-      connection.on("mute", (isMuted) => {
-        log(`🔇 Mute state changed: ${isMuted ? "MUTED" : "UNMUTED"}`);
-        if (isMuted) {
-          log("⚠️ WARNING: Connection is muted! Audio will not play.", "error");
-        }
-      });
+        // 🔧 FIX: Monitor mute state changes
+        connection.on("mute", (isMuted) => {
+          log(`🔇 Mute state changed: ${isMuted ? "MUTED" : "UNMUTED"}`);
+          if (isMuted) {
+            log("⚠️ WARNING: Connection is muted! Audio will not play.", "error");
+          }
+        });
+      }
 
-      // 🔧 FIX: Log connection status
-      log(`Connection status: ${connection.status()}`);
-      log(`Connection muted: ${connection.isMuted()}`);
+      // 🔧 FIX: Log connection status (with safety check)
+      try {
+        const status = connection.status ? connection.status() : "unknown";
+        const isMuted = connection.isMuted ? connection.isMuted() : "unknown";
+        log(`Connection status: ${status}`);
+        log(`Connection muted: ${isMuted}`);
+      } catch (statusErr) {
+        log(`⚠️ Could not get connection status: ${statusErr.message}`, "error");
+      }
       
       // 🔧 FIX: Force unmute after a short delay (in case of race condition)
       setTimeout(() => {
-        if (connection.status() === "open") {
-          connection.mute(false);
-          log("🔊 Force unmuted connection (delayed)", "success");
+        try {
+          if (connection && connection.status && connection.status() === "open") {
+            if (typeof connection.mute === "function") {
+              connection.mute(false);
+              log("🔊 Force unmuted connection (delayed)", "success");
+            }
+          }
+        } catch (err) {
+          log(`⚠️ Delayed unmute failed: ${err.message}`, "error");
         }
       }, 500);
 
     } catch (err) {
       log(`Error setting up connection audio: ${err.message}`, "error");
+      log(`Error stack: ${err.stack}`, "error");
     }
   }
 
@@ -211,11 +258,17 @@ export default function VoiceClient() {
     if (!dialTo) return log("Enter number / agent ID", "error");
 
     setStatusText(`Calling ${dialTo}...`);
-    const conn = device.connect({ params: { To: dialTo, From: identity } });
-    setActiveConnection(conn);
-    
-    // 🔧 FIX: Setup audio immediately when placing call
-    setupConnectionAudio(conn, device);
+    try {
+      const conn = device.connect({ params: { To: dialTo, From: identity } });
+      setActiveConnection(conn);
+      
+      // 🔧 FIX: Don't setup audio here - wait for 'connect' event
+      // The 'connect' event handler will call setupConnectionAudio
+      log("Call initiated, waiting for connection...");
+    } catch (err) {
+      log(`Error placing call: ${err.message}`, "error");
+      setStatusText(`Call failed: ${err.message}`, "error");
+    }
   };
 
   const hangupCall = () => {
