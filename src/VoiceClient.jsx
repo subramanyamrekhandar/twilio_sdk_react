@@ -11,13 +11,15 @@ export default function VoiceClient() {
   const [activeConnection, setActiveConnection] = useState(null);
 
   const micStreamRef = useRef(null);       // Mic stream (persistent)
-  const audioContextRef = useRef(null);    // Audio context to keep stream alive
+  const audioContextRef = useRef(null);    // Keeps mic alive (silent)
   const logRef = useRef(null);
 
   function log(msg, type="info") {
     const timestamp = new Date().toISOString();
     const prefix = type === "error" ? "❌" : type === "success" ? "✅" : "ℹ️";
-    logRef.current.value = `${timestamp} ${prefix} ${msg}\n${logRef.current.value}`;
+    if (logRef.current) {
+      logRef.current.value = `${timestamp} ${prefix} ${msg}\n${logRef.current.value}`;
+    }
     console.log("[VoiceClient]", msg);
   }
 
@@ -35,31 +37,32 @@ export default function VoiceClient() {
     try {
       setStatus("Requesting microphone...", "info");
 
-      // 1️⃣ Get and lock microphone stream
+      // 1️⃣ Get microphone stream
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       micStreamRef.current = stream;
       log("🎤 Microphone granted", "success");
 
-      // 2️⃣ Prevent browser from stopping mic stream
+      // 2️⃣ Prevent microphone auto-stop (SILENT connection)
       audioContextRef.current = new AudioContext();
       const src = audioContextRef.current.createMediaStreamSource(stream);
-      const dst = audioContextRef.current.createGain();
-      src.connect(dst);
-      dst.connect(audioContextRef.current.destination);
-      log("🔄 Microphone stream pinned alive", "success");
+      const silentGain = audioContextRef.current.createGain();
+      silentGain.gain.value = 0; // mute (prevents loopback!)
+      src.connect(silentGain);   // mic stays active, no audio output
+      log("🔄 Microphone pinned alive (silent)", "success");
 
-      // 3️⃣ Get Twilio token & create device
+      // 3️⃣ Get Twilio token
       const token = await getToken();
+
+      // 4️⃣ Create Twilio device
       const twilioDevice = new Device(token, {
         codecPreferences: ["opus", "pcmu"],
         enableRingingState: true,
       });
 
-      // 4️⃣ Wait until audio devices ready, then bind output speaker
+      // 5️⃣ Speaker setup
       twilioDevice.audio.on("ready", () => {
         const outputs = twilioDevice.audio.availableOutputDevices;
         const defaultOut = outputs.get("default");
-
         if (defaultOut) {
           twilioDevice.audio.speakerDevices.set(defaultOut.deviceId);
           log("🔊 Speaker set to default", "success");
@@ -70,24 +73,24 @@ export default function VoiceClient() {
 
       twilioDevice.on("registered", () => {
         log("📡 Twilio registered", "success");
-        setDevice(twilioDevice);
         setStatus("Device ready", "success");
+        setDevice(twilioDevice);
       });
 
       twilioDevice.on("connect", conn => {
         log("📞 Call connected", "success");
         setActiveConnection(conn);
 
-        // Unmute just in case
         conn.mute(false);
 
-        conn.on("volume", (inV, outV) => {
-          console.log("VOLUME", { inV, outV });
+        // For debugging audio inbound from backend
+        conn.on("volume", (inVol, outVol) => {
+          console.log("VOLUME:", { inVol, outVol });
         });
       });
 
       twilioDevice.on("disconnect", () => {
-        log("📴 Call disconnected");
+        log("📴 Call disconnected", "info");
         setActiveConnection(null);
       });
 
@@ -101,9 +104,12 @@ export default function VoiceClient() {
 
   const placeCall = () => {
     if (!device) return log("Device not initialized", "error");
-    if (!dialTo) return log("Enter number", "error");
+    if (!dialTo) return log("Enter number or agent ID", "error");
 
-    const conn = device.connect({ params: { To: dialTo, From: identity } });
+    setStatus(`Calling ${dialTo}...`);
+    const conn = device.connect({
+      params: { To: dialTo, From: identity }
+    });
     setActiveConnection(conn);
   };
 
@@ -117,28 +123,41 @@ export default function VoiceClient() {
     <div className="p-6 max-w-xl mx-auto">
       <h1 className="text-xl font-bold">🎤 Namunah Voice Client</h1>
 
-      <button className="bg-green-600 text-white px-4 py-2 rounded mt-3"
-              onClick={initDevice}>
+      <button
+        className="bg-green-600 text-white px-4 py-2 rounded mt-3"
+        onClick={initDevice}
+      >
         Initialize
       </button>
 
-      <input className="w-full p-3 border rounded mt-3"
-             placeholder="Dial to..."
-             value={dialTo}
-             onChange={e => setDialTo(e.target.value)} />
+      <input
+        className="w-full p-3 border rounded mt-3"
+        placeholder="Dial to..."
+        value={dialTo}
+        onChange={e => setDialTo(e.target.value)}
+      />
 
       <div className="flex gap-3 mt-3">
-        <button className="bg-blue-600 text-white px-4 py-2 rounded"
-                onClick={placeCall}>
+        <button
+          className="bg-blue-600 text-white px-4 py-2 rounded"
+          onClick={placeCall}
+        >
           Call
         </button>
-        <button className="bg-red-600 text-white px-4 py-2 rounded"
-                onClick={hangupCall}>
+        <button
+          className="bg-red-600 text-white px-4 py-2 rounded"
+          onClick={hangupCall}
+          disabled={!activeConnection}
+        >
           Hang Up
         </button>
       </div>
 
-      <textarea ref={logRef} className="w-full h-60 border p-2 mt-4 font-mono text-xs" />
+      <textarea
+        ref={logRef}
+        className="w-full h-60 border p-2 mt-4 font-mono text-xs"
+        readOnly
+      />
     </div>
   );
 }
