@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef } from "react";
 import { Device } from "@twilio/voice-sdk";
 
 export default function VoiceClient() {
@@ -6,20 +6,19 @@ export default function VoiceClient() {
   const [identity, setIdentity] = useState("agent_web_01");
   const [dialTo, setDialTo] = useState("");
   const [status, setStatus] = useState("Device not initialized");
+  const [statusType, setStatusType] = useState("info");
   const [device, setDevice] = useState(null);
   const [activeConnection, setActiveConnection] = useState(null);
-  const [muted, setMuted] = useState(false);
-  const [callDuration, setCallDuration] = useState(0);
 
-  const timerRef = useRef(null);
-  const micStreamRef = useRef(null);
-  const audioContextRef = useRef(null);
+  const micStreamRef = useRef(null);       // Mic stream (persistent)
+  const audioContextRef = useRef(null);    // Keeps mic alive (silent)
   const logRef = useRef(null);
 
-  function log(msg) {
+  function log(msg, type="info") {
     const timestamp = new Date().toISOString();
+    const prefix = type === "error" ? "❌" : type === "success" ? "✅" : "ℹ️";
     if (logRef.current) {
-      logRef.current.value = `${timestamp} ${msg}\n${logRef.current.value}`;
+      logRef.current.value = `${timestamp} ${prefix} ${msg}\n${logRef.current.value}`;
     }
     console.log("[VoiceClient]", msg);
   }
@@ -36,105 +35,88 @@ export default function VoiceClient() {
 
   const initDevice = async () => {
     try {
-      setStatus("Requesting microphone...");
+      setStatus("Requesting microphone...", "info");
+
+      // 1️⃣ Get microphone stream
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       micStreamRef.current = stream;
+      log("🎤 Microphone granted", "success");
 
-      // activate silent pipeline to keep mic alive
+      // 2️⃣ Prevent microphone auto-stop (SILENT connection)
       audioContextRef.current = new AudioContext();
       const src = audioContextRef.current.createMediaStreamSource(stream);
       const silentGain = audioContextRef.current.createGain();
-      silentGain.gain.value = 0;
-      src.connect(silentGain);
+      silentGain.gain.value = 0; // mute (prevents loopback!)
+      src.connect(silentGain);   // mic stays active, no audio output
+      log("🔄 Microphone pinned alive (silent)", "success");
 
-      log("🎤 Microphone is ready.");
-
+      // 3️⃣ Get Twilio token
       const token = await getToken();
+
+      // 4️⃣ Create Twilio device
       const twilioDevice = new Device(token, {
         codecPreferences: ["opus", "pcmu"],
         enableRingingState: true,
       });
 
+      // 5️⃣ Speaker setup
+      twilioDevice.audio.on("ready", () => {
+        const outputs = twilioDevice.audio.availableOutputDevices;
+        const defaultOut = outputs.get("default");
+        if (defaultOut) {
+          twilioDevice.audio.speakerDevices.set(defaultOut.deviceId);
+          log("🔊 Speaker set to default", "success");
+        } else {
+          log("⚠️ No speaker found", "error");
+        }
+      });
+
       twilioDevice.on("registered", () => {
-        log("📡 Twilio Device Registered");
-        setStatus("Device Ready");
+        log("📡 Twilio registered", "success");
+        setStatus("Device ready", "success");
         setDevice(twilioDevice);
       });
 
-      twilioDevice.on("connect", (conn) => {
-        log("📞 Connected");
+      twilioDevice.on("connect", conn => {
+        log("📞 Call connected", "success");
         setActiveConnection(conn);
-        startCallTimer();
 
-        conn.on("disconnect", () => {
-          log("📴 Call Disconnected");
-          stopCallTimer();
-          setActiveConnection(null);
+        conn.mute(false);
+
+        // For debugging audio inbound from backend
+        conn.on("volume", (inVol, outVol) => {
+          console.log("VOLUME:", { inVol, outVol });
         });
       });
 
-      twilioDevice.on("error", (err) => {
-        log(`❌ Device Error: ${err.message}`);
+      twilioDevice.on("disconnect", () => {
+        log("📴 Call disconnected", "info");
+        setActiveConnection(null);
       });
 
       await twilioDevice.register();
-    } catch (err) {
-      log(`Init Failed: ${err.message}`);
-      setStatus("Initialization Failed");
+
+    } catch (e) {
+      setStatus(`Init failed: ${e.message}`, "error");
+      log(`Init failed: ${e.message}`, "error");
     }
   };
 
   const placeCall = () => {
-    if (!device) return log("Device not ready");
-    if (!dialTo) return log("Enter Number");
+    if (!device) return log("Device not initialized", "error");
+    if (!dialTo) return log("Enter number or agent ID", "error");
 
-    log(`📞 Dialing ${dialTo}...`);
     setStatus(`Calling ${dialTo}...`);
-
     const conn = device.connect({
-      params: { To: dialTo, From: identity },
+      params: { To: dialTo, From: identity }
     });
-
-    // immediately save reference
     setActiveConnection(conn);
   };
 
   const hangupCall = () => {
-    if (!activeConnection) {
-      log("No active call");
-      return;
-    }
-
-    log("☎️ Hanging up...");
-    activeConnection.disconnect();
-    stopCallTimer();
-    setActiveConnection(null);
-  };
-
-  const toggleMute = () => {
     if (!activeConnection) return;
-    const newState = !muted;
-    activeConnection.mute(newState);
-    setMuted(newState);
-  };
-
-  const startCallTimer = () => {
-    setCallDuration(0);
-    timerRef.current = setInterval(() => {
-      setCallDuration((p) => p + 1);
-    }, 1000);
-  };
-
-  const stopCallTimer = () => {
-    clearInterval(timerRef.current);
-    timerRef.current = null;
-    setCallDuration(0);
-  };
-
-  const formatTime = (sec) => {
-    const m = Math.floor(sec / 60);
-    const s = sec % 60;
-    return `${m}:${s < 10 ? "0" : ""}${s}`;
+    activeConnection.disconnect();
+    setActiveConnection(null);
   };
 
   return (
@@ -152,23 +134,15 @@ export default function VoiceClient() {
         className="w-full p-3 border rounded mt-3"
         placeholder="Dial to..."
         value={dialTo}
-        onChange={(e) => setDialTo(e.target.value)}
+        onChange={e => setDialTo(e.target.value)}
       />
 
       <div className="flex gap-3 mt-3">
         <button
           className="bg-blue-600 text-white px-4 py-2 rounded"
           onClick={placeCall}
-          disabled={!!activeConnection}
         >
           Call
-        </button>
-        <button
-          className="bg-yellow-600 text-white px-4 py-2 rounded"
-          onClick={toggleMute}
-          disabled={!activeConnection}
-        >
-          {muted ? "Unmute" : "Mute"}
         </button>
         <button
           className="bg-red-600 text-white px-4 py-2 rounded"
@@ -178,12 +152,6 @@ export default function VoiceClient() {
           Hang Up
         </button>
       </div>
-
-      {activeConnection && (
-        <div className="mt-4 text-lg font-semibold">
-          Call Time: {formatTime(callDuration)}
-        </div>
-      )}
 
       <textarea
         ref={logRef}
